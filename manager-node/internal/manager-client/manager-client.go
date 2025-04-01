@@ -319,6 +319,8 @@ func (mc *ManagerClient) alertTaskError(uuid string, errorStr string) { //todo �
 }
 
 func (mc *ManagerClient) doneTask(uuid string) { //todo отправка уведомления об окончании решения мастеру и удаление задачи
+	// сделать проверку на то что
+	// Проверяем все имеющиейся подзадачи на uuid Главной таски, если они есть, то дожидаемся от них ответа. и только после этого уведомляем мастера о том что задача выполнилась мастера /task/done
 }
 
 func (mc *ManagerClient) CompleteSubTask(resp model.CompleteSubtaskRequest) error {
@@ -338,6 +340,12 @@ func (mc *ManagerClient) CompleteSubTask(resp model.CompleteSubtaskRequest) erro
 	task, ok := mc.taskStatus[subtask.TaskUuid]
 	if !ok {
 		return errors.New("task not found")
+	}
+
+	if resp.Status == "empty" {
+		log.Println("TASK is done with uuid: ", subtask.TaskUuid)
+		mc.doneTask(subtask.TaskUuid)
+		return nil
 	}
 
 	return mc.sendMasterSubTask(resp.Data, task.MasterUuid)

@@ -63,6 +63,13 @@ func (g *Generator) SendResult(result interface{}, err error) { //todo отпр�
 
 }
 
+type CompleteSubtaskRequest struct { //todo в SendResult()
+	SlaveUUID   string          `json:"UUID"`
+	SubtaskUUID string          `json:"SubtaskUUID"`
+	Status      string          `json:"Status"`
+	Data        json.RawMessage `json:"Data"`
+}
+
 func (g *Generator) ComputeTask(task model.ComputeRequest) (interface{}, error) {
 	// Конвертируем входные данные в Starlark значение
 	data, err := parseInputData(task.Data)
@@ -121,7 +128,7 @@ func (g *Generator) ComputeTask(task model.ComputeRequest) (interface{}, error) 
 		starlark.MakeInt(task.Start),
 	}
 
-	result, err := starlark.Call(threadCompute, globalsCompute[task.Compute.FuncName], argsCompute, nil)
+	result, err := starlark.Call(threadCompute, globalsCompute[task.Compute.FuncName], argsCompute, nil) //todo вытаскивать еще статус о подзадаче как расписал в обсидиане
 	if err != nil {
 		return nil, fmt.Errorf("script error while calling: %v", err)
 	}

@@ -18,5 +18,6 @@ type ComputeRequest struct {
 type CompleteSubtaskRequest struct {
 	SlaveUUID   string          `json:"UUID"`
 	SubtaskUUID string          `json:"SubtaskUUID"`
+	Status      string          `json:"Status"`
 	Data        json.RawMessage `json:"Data"`
 }

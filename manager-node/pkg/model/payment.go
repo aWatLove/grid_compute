@@ -8,11 +8,12 @@ type ScriptConfig struct {
 }
 
 type ComputeRequest struct {
-	Generate ScriptConfig    `json:"GenerateScript"` // скрипт генерации подзадач из данных
-	Compute  ScriptConfig    `json:"ComputeScript"`  // скрипт решения подзадач
-	Data     json.RawMessage `json:"Data"`           // данные из которых нужно генерировать
-	Amount   uint32          `json:"Amount"`         // кол-во подзадач которое нужно сгенерировать
-	Start    uint32          `json:"Start"`          // позиция от которой генерировать данные для просчета
+	UuidSubtask string          `json:"UuidSubtask"`
+	Generate    ScriptConfig    `json:"GenerateScript"` // скрипт генерации подзадач из данных
+	Compute     ScriptConfig    `json:"ComputeScript"`  // скрипт решения подзадач
+	Data        json.RawMessage `json:"Data"`           // данные из которых нужно генерировать
+	Amount      uint32          `json:"Amount"`         // кол-во подзадач которое нужно сгенерировать
+	Start       uint32          `json:"Start"`          // позиция от которой генерировать данные для просчета
 }
 
 type CompleteSubtaskRequest struct {

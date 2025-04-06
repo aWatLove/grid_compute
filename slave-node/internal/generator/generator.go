@@ -1,10 +1,14 @@
 package generator
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"go.starlark.net/starlark"
+	"io/ioutil"
 	"log"
+	"net/http"
+	"slave-node/internal/config"
 	"slave-node/pkg/model"
 )
 
@@ -27,14 +31,17 @@ const (
 
 type Generator struct {
 	status uint8
+	cfg    *config.Config
 
-	//globals starlark.StringDict
-	taskCh   chan model.ComputeRequest
-	resultCh chan model.ComputeRequest
+	taskCh chan model.ComputeRequest
 }
 
-func NewGenerator() *Generator {
-	return &Generator{}
+func NewGenerator(cfg *config.Config) *Generator {
+	return &Generator{
+		status: 0,
+		cfg:    cfg,
+		taskCh: make(chan model.ComputeRequest),
+	}
 }
 
 func (g *Generator) AddTask(task model.ComputeRequest) error {
@@ -50,17 +57,123 @@ func (g *Generator) CheckStatus() string {
 	return statusStr[g.status]
 }
 
+// Обновленный обработчик задач
 func (g *Generator) taskWorker() {
 	for task := range g.taskCh {
 		g.status = STATUS_SOLVING
-		result, err := g.ComputeTask(task)
-		g.SendResult(result, err)
-		g.status = STATUS_WAIT_TASK
+		data, status, err := g.ComputeTask(task)
+		if err != nil {
+			status = "error"
+			err = g.SendAlert(ErrorSubtaskReq{
+				SlaveUUID:   g.cfg.UUID,
+				SubtaskUUID: task.UuidSubtask,
+				Error:       err.Error(),
+			})
+			g.status = STATUS_ERROR
+
+		} else {
+			err = g.SendResult(task, data, status)
+			if err != nil {
+				g.status = STATUS_ERROR
+			} else {
+				g.status = STATUS_WAIT_TASK
+			}
+
+		}
+
 	}
 }
 
-func (g *Generator) SendResult(result interface{}, err error) { //todo отправка manager'у результата
+// Обновленный метод SendResult
+func (g *Generator) SendResult(task model.ComputeRequest, data interface{}, status string) error {
+	dataBytes, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("Failed to marshal data: %v", err)
+		return fmt.Errorf("Failed to marshal data: %v", err)
+	}
 
+	result := CompleteSubtaskRequest{
+		SlaveUUID:   g.cfg.UUID,       // Предполагается наличие поля
+		SubtaskUUID: task.UuidSubtask, // Из исходной задачи
+		Status:      status,
+		Data:        json.RawMessage(dataBytes),
+	}
+
+	client := http.Client{}
+
+	dataRes, err := json.Marshal(result)
+	if err != nil {
+		log.Printf("Failed to marshal data: %v", err)
+		return fmt.Errorf("Failed to marshal data: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://%s%s", g.cfg.ManagerURL, "/api/v1/subtask/complete"), bytes.NewReader(dataRes))
+	if err != nil {
+		log.Printf("Failed to create request: %v", err)
+		return fmt.Errorf("Failed to create request: %v", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("Failed to send request: %v", err)
+		return fmt.Errorf("Failed to send request: %v", err)
+	}
+
+	if resp.StatusCode/100 != 2 {
+		body, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			log.Printf("Failed to read response body: %v", err)
+			return fmt.Errorf("Failed to read response body: %v", err)
+		}
+		defer resp.Body.Close()
+		log.Printf("Response body: %s", string(body))
+		return fmt.Errorf("Failed to send request: %s", string(body))
+	}
+
+	return nil
+}
+
+type ErrorSubtaskReq struct {
+	SlaveUUID   string `json:"SlaveUUID"`
+	SubtaskUUID string `json:"SubtaskUUID"`
+	Error       string `json:"Error"`
+}
+
+// SendAlert
+func (g *Generator) SendAlert(reqBody ErrorSubtaskReq) error {
+
+	client := http.Client{}
+
+	dataRes, err := json.Marshal(reqBody)
+	if err != nil {
+		log.Printf("Failed to marshal data: %v", err)
+		return fmt.Errorf("Failed to marshal data: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://%s%s", g.cfg.ManagerURL, "/api/v1/subtask/complete"), bytes.NewReader(dataRes))
+	if err != nil {
+		log.Printf("Failed to create request: %v", err)
+		return fmt.Errorf("Failed to create request: %v", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("Failed to send request: %v", err)
+		return fmt.Errorf("Failed to send request: %v", err)
+	}
+
+	if resp.StatusCode/100 != 2 {
+		body, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			log.Printf("Failed to read response body: %v", err)
+			return fmt.Errorf("Failed to read response body: %v", err)
+		}
+		defer resp.Body.Close()
+		log.Printf("Response body: %s", string(body))
+		return fmt.Errorf("Failed to send request: %s", string(body))
+	}
+
+	return nil
 }
 
 type CompleteSubtaskRequest struct { //todo в SendResult()
@@ -70,11 +183,79 @@ type CompleteSubtaskRequest struct { //todo в SendResult()
 	Data        json.RawMessage `json:"Data"`
 }
 
-func (g *Generator) ComputeTask(task model.ComputeRequest) (interface{}, error) {
+//func (g *Generator) ComputeTask(task model.ComputeRequest) (interface{}, error) {
+//	// Конвертируем входные данные в Starlark значение
+//	data, err := parseInputData(task.Data)
+//	if err != nil {
+//		return nil, fmt.Errorf("input data error: %v", err)
+//	}
+//
+//	// Создаем окружение с входными данными
+//	builtinsGenerate := starlark.StringDict{
+//		"input_data": data,
+//		"amount":     starlark.MakeInt(task.Amount),
+//		"start":      starlark.MakeInt(task.Start),
+//		"error":      starlark.None,
+//	}
+//
+//	// Выполняем скрипт
+//	threadGenerate := &starlark.Thread{
+//		Name:  "starlark",
+//		Print: func(_ *starlark.Thread, msg string) { log.Println("[SCRIPT][GENERATE]", msg) },
+//	}
+//
+//	globalsGenerate, err := starlark.ExecFile(threadGenerate, "compute.star", task.Generate.Script, builtinsGenerate)
+//	if err != nil {
+//		return nil, fmt.Errorf("script error: %v", err)
+//	}
+//
+//	argsGenerate := starlark.Tuple{
+//		data,
+//		starlark.MakeInt(task.Amount),
+//		starlark.MakeInt(task.Start),
+//	}
+//
+//	resultGenerate, err := starlark.Call(threadGenerate, globalsGenerate[task.Generate.FuncName], argsGenerate, nil)
+//	if err != nil {
+//		return nil, fmt.Errorf("script error while calling: %v", err)
+//	}
+//
+//	builtinsCompute := starlark.StringDict{
+//		"input_data": resultGenerate,
+//		"error":      starlark.None,
+//	}
+//
+//	threadCompute := &starlark.Thread{
+//		Name:  "starlark",
+//		Print: func(_ *starlark.Thread, msg string) { log.Println("[SCRIPT][COMPUTE]", msg) },
+//	}
+//
+//	globalsCompute, err := starlark.ExecFile(threadCompute, "compute.star", task.Compute.Script, builtinsCompute)
+//	if err != nil {
+//		return nil, fmt.Errorf("script error: %v", err)
+//	}
+//
+//	argsCompute := starlark.Tuple{
+//		data,
+//		starlark.MakeInt(task.Amount),
+//		starlark.MakeInt(task.Start),
+//	}
+//
+//	result, err := starlark.Call(threadCompute, globalsCompute[task.Compute.FuncName], argsCompute, nil) //todo вытаскивать еще статус о подзадаче как расписал в обсидиане
+//	if err != nil {
+//		return nil, fmt.Errorf("script error while calling: %v", err)
+//	}
+//
+//	return convertToGoType(result)
+//}
+
+// ComputeTask возвращает данные, статус и ошибку
+func (g *Generator) ComputeTask(task model.ComputeRequest) (interface{}, string, error) {
+	// ... [парсинг входных данных] ...
 	// Конвертируем входные данные в Starlark значение
 	data, err := parseInputData(task.Data)
 	if err != nil {
-		return nil, fmt.Errorf("input data error: %v", err)
+		return nil, "error", fmt.Errorf("input data error: %v", err)
 	}
 
 	// Создаем окружение с входными данными
@@ -93,7 +274,7 @@ func (g *Generator) ComputeTask(task model.ComputeRequest) (interface{}, error) 
 
 	globalsGenerate, err := starlark.ExecFile(threadGenerate, "compute.star", task.Generate.Script, builtinsGenerate)
 	if err != nil {
-		return nil, fmt.Errorf("script error: %v", err)
+		return nil, "error", fmt.Errorf("script error: %v", err)
 	}
 
 	argsGenerate := starlark.Tuple{
@@ -102,13 +283,35 @@ func (g *Generator) ComputeTask(task model.ComputeRequest) (interface{}, error) 
 		starlark.MakeInt(task.Start),
 	}
 
+	// Выполнение скрипта Generate
 	resultGenerate, err := starlark.Call(threadGenerate, globalsGenerate[task.Generate.FuncName], argsGenerate, nil)
 	if err != nil {
-		return nil, fmt.Errorf("script error while calling: %v", err)
+		return nil, "error", fmt.Errorf("generate script error: %v", err)
+	}
+
+	// Извлекаем статус и данные из Generate
+	dataGenerate, statusGenerate, err := extractStatusAndData(resultGenerate)
+	if err != nil {
+		return nil, "error", fmt.Errorf("generate result parsing error: %v", err)
+	}
+
+	switch statusGenerate {
+	case "error":
+		return nil, "error", nil
+	case "empty":
+		goData, err := convertToGoType(dataGenerate)
+		if err != nil {
+			return nil, "error", err
+		}
+		return goData, "empty", nil
+	case "ok":
+		// Продолжаем выполнение
+	default:
+		return nil, "error", fmt.Errorf("unknown generate status: %s", statusGenerate)
 	}
 
 	builtinsCompute := starlark.StringDict{
-		"input_data": resultGenerate,
+		"input_data": dataGenerate,
 		"error":      starlark.None,
 	}
 
@@ -119,22 +322,109 @@ func (g *Generator) ComputeTask(task model.ComputeRequest) (interface{}, error) 
 
 	globalsCompute, err := starlark.ExecFile(threadCompute, "compute.star", task.Compute.Script, builtinsCompute)
 	if err != nil {
-		return nil, fmt.Errorf("script error: %v", err)
+		return nil, "error", fmt.Errorf("script error: %v", err)
 	}
 
 	argsCompute := starlark.Tuple{
-		data,
-		starlark.MakeInt(task.Amount),
-		starlark.MakeInt(task.Start),
+		dataGenerate,
 	}
 
-	result, err := starlark.Call(threadCompute, globalsCompute[task.Compute.FuncName], argsCompute, nil) //todo вытаскивать еще статус о подзадаче как расписал в обсидиане
+	// Выполнение скрипта Compute
+	resultCompute, err := starlark.Call(threadCompute, globalsCompute[task.Compute.FuncName], argsCompute, nil)
 	if err != nil {
-		return nil, fmt.Errorf("script error while calling: %v", err)
+		return nil, "error", fmt.Errorf("compute script error: %v", err)
 	}
 
-	return convertToGoType(result)
+	// Извлекаем статус и данные из Compute
+	dataCompute, statusCompute, err := extractStatusAndData(resultCompute)
+	if err != nil {
+		return nil, "error", fmt.Errorf("compute result parsing error: %v", err)
+	}
+
+	// Конвертируем данные в Go-тип
+	goData, err := convertToGoType(dataCompute)
+	if err != nil {
+		return nil, "error", err
+	}
+
+	return goData, statusCompute, nil
 }
+
+//func (g *Generator) ComputeTask(task model.ComputeRequest) (interface{}, string, error) {
+//	// Конвертируем входные данные
+//	data, err := parseInputData(task.Data)
+//	if err != nil {
+//		return nil, "error", fmt.Errorf("input data error: %v", err)
+//	}
+//
+//	// Выполняем Generate скрипт
+//	resultGenerate, statusGenerate, err := g.executeGenerateScript(task, data)
+//	if statusGenerate != "ok" || err != nil {
+//		return nil, statusGenerate, err
+//	}
+//
+//	// Подготавливаем входные данные для Compute
+//	computeInput := starlark.NewDict(2)
+//	computeInput.SetKey(starlark.String("matrix"), data)
+//	computeInput.SetKey(starlark.String("routes"), resultGenerate)
+//
+//	// Выполняем Compute скрипт
+//	resultCompute, statusCompute, err := g.executeComputeScript(task, computeInput)
+//	if statusCompute != "ok" || err != nil {
+//		return nil, statusCompute, err
+//	}
+//
+//	// Конвертируем финальный результат
+//	goData, err := convertToGoType(resultCompute)
+//	if err != nil {
+//		return nil, "error", fmt.Errorf("result conversion error: %v", err)
+//	}
+//
+//	return goData, "ok", nil
+//}
+//
+//func (g *Generator) executeGenerateScript(task model.ComputeRequest, data starlark.Value) (starlark.Value, string, error) {
+//	builtins := starlark.StringDict{
+//		"input_data": data,
+//		"amount":     starlark.MakeInt(task.Amount),
+//		"start":      starlark.MakeInt(task.Start),
+//		"error":      starlark.None,
+//	}
+//
+//	thread := &starlark.Thread{Name: "generate"}
+//	globals, err := starlark.ExecFile(thread, "generate.star", task.Generate.Script, builtins)
+//	if err != nil {
+//		return nil, "error", err
+//	}
+//
+//	args := starlark.Tuple{data, starlark.MakeInt(task.Amount), starlark.MakeInt(task.Start)}
+//	result, err := starlark.Call(thread, globals[task.Generate.FuncName], args, nil)
+//	if err != nil {
+//		return nil, "error", err
+//	}
+//
+//	return extractStatusAndData(result)
+//}
+//
+//func (g *Generator) executeComputeScript(task model.ComputeRequest, input *starlark.Dict) (starlark.Value, string, error) {
+//	builtins := starlark.StringDict{
+//		"input_data": input,
+//		"error":      starlark.None,
+//	}
+//
+//	thread := &starlark.Thread{Name: "compute"}
+//	globals, err := starlark.ExecFile(thread, "compute.star", task.Compute.Script, builtins)
+//	if err != nil {
+//		return nil, "error", err
+//	}
+//
+//	result, err := starlark.Call(thread, globals[task.Compute.FuncName], starlark.Tuple{input}, nil)
+//	if err != nil {
+//		return nil, "error", err
+//	}
+//
+//	return extractStatusAndData(result)
+//}
 
 func parseInputData(data json.RawMessage) (starlark.Value, error) {
 	var rawData interface{}
@@ -228,5 +518,47 @@ func convertToGoType(v starlark.Value) (interface{}, error) {
 		return result, nil
 	default:
 		return nil, fmt.Errorf("unsupported Starlark type: %T", v)
+	}
+}
+
+// extractStatusAndData извлекает статус и данные из результата Starlark
+func extractStatusAndData(result starlark.Value) (data starlark.Value, status string, err error) {
+	switch res := result.(type) {
+	case *starlark.Dict:
+		// Извлекаем статус из словаря
+		statusVal, found, err := res.Get(starlark.String("status"))
+		if err != nil || !found {
+			return nil, "", fmt.Errorf("status not found in result dict")
+		}
+		statusStr, ok := statusVal.(starlark.String)
+		if !ok {
+			return nil, "", fmt.Errorf("status is not a string")
+		}
+		status = string(statusStr)
+
+		// Извлекаем данные из словаря
+		dataVal, found, err := res.Get(starlark.String("data"))
+		if err != nil || !found {
+			return nil, "", fmt.Errorf("data not found in result dict")
+		}
+		data = dataVal
+		return data, status, nil
+
+	case starlark.Tuple:
+		if res.Len() != 2 {
+			return nil, "", fmt.Errorf("expected tuple of length 2")
+		}
+		// Статус - первый элемент, данные - второй
+		statusVal, ok := res.Index(0).(starlark.String)
+		if !ok {
+			return nil, "", fmt.Errorf("status in tuple is not a string")
+		}
+		status = string(statusVal)
+		data = res.Index(1)
+		return data, status, nil
+
+	default:
+		// Если результат не содержит статуса, считаем его "ok"
+		return result, "ok", nil
 	}
 }

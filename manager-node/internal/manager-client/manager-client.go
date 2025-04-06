@@ -190,11 +190,12 @@ func (mc *ManagerClient) sendSubTask(subtaskUuid string, taskUuid string, slave 
 	}
 
 	reqBody := model.ComputeRequest{
-		Generate: mn.generatorScript,
-		Compute:  mn.computeScript,
-		Data:     task.Data,
-		Amount:   amount,
-		Start:    start,
+		UuidSubtask: subtaskUuid,
+		Generate:    mn.generatorScript,
+		Compute:     mn.computeScript,
+		Data:        task.Data,
+		Amount:      amount,
+		Start:       start,
 	}
 	err := mc.sendSlave(reqBody, slave)
 	if err != nil {
@@ -316,11 +317,100 @@ func (mc *ManagerClient) AlertSubtaskError(uuid string, slaveUuid string, errorS
 func (mc *ManagerClient) alertTaskError(uuid string, errorStr string) { //todo отправка уведомления об ошибке мастеру и удаление задачи
 	// найти мастера по uuid , отправить ему ошибку по ручке
 	//todo
+	_, ok := mc.taskStatus[uuid]
+	if !ok {
+		log.Printf("[DONE TASK][ERROR] task not found with uuid %s\n", uuid)
+	}
+	mc.mu.Lock()
+	delete(mc.taskStatus, uuid)
+	mc.mu.Unlock()
+
+	master, ok := mc.MasterNodes[uuid]
+	if !ok {
+		log.Printf("[DONE TASK][ERROR] master node not found with uuid %s\n", uuid)
+	}
+
+	master.cancelTask()
+
+	client := http.Client{}
+
+	data, err := json.Marshal(errorStr)
+	if err != nil {
+		log.Println(err)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://%s%s", master.Url, "/api/v1/task/error"), bytes.NewReader(data))
+	if err != nil {
+		log.Println(err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Println(err)
+	}
+	if resp.StatusCode/100 != 2 {
+		respBody, _ := io.ReadAll(resp.Body)
+		defer resp.Body.Close()
+		log.Println(err, string(respBody))
+	}
+
+	log.Printf("[TASK ALERT] ALERT!!!! with uuid: %s\n", uuid)
+
 }
 
-func (mc *ManagerClient) doneTask(uuid string) { //todo отправка уведомления об окончании решения мастеру и удаление задачи
+func (mc *ManagerClient) doneTask(uuid string) {
 	// сделать проверку на то что
 	// Проверяем все имеющиейся подзадачи на uuid Главной таски, если они есть, то дожидаемся от них ответа. и только после этого уведомляем мастера о том что задача выполнилась мастера /task/done
+	_, ok := mc.taskStatus[uuid]
+	if !ok {
+		log.Printf("[DONE TASK][ERROR] task not found with uuid %s\n", uuid)
+	}
+	mc.mu.Lock()
+	delete(mc.taskStatus, uuid)
+	mc.mu.Unlock()
+
+	master, ok := mc.MasterNodes[uuid]
+	if !ok {
+		log.Printf("[DONE TASK][ERROR] master node not found with uuid %s\n", uuid)
+	}
+
+	master.cancelTask()
+
+	subtasksMap := make(map[string]Subtask)
+
+	for s, subtask := range mc.subtasksStatus {
+		if subtask.TaskUuid == uuid {
+			subtasksMap[s] = subtask
+		}
+	}
+
+	for len(subtasksMap) != 0 {
+		for s, _ := range subtasksMap {
+			if _, ok := mc.subtasksStatus[s]; !ok {
+				delete(mc.subtasksStatus, s)
+			}
+		}
+		time.Sleep(5 * time.Second)
+	}
+
+	client := http.Client{}
+
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://%s%s", master.Url, "/api/v1/task/done"), nil)
+	if err != nil {
+		log.Println(err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Println(err)
+	}
+	if resp.StatusCode/100 != 2 {
+		respBody, _ := io.ReadAll(resp.Body)
+		defer resp.Body.Close()
+		log.Println(err, string(respBody))
+	}
+
+	log.Printf("[TASK DONE] DONE!!!! with uuid: %s\n", uuid)
 }
 
 func (mc *ManagerClient) CompleteSubTask(resp model.CompleteSubtaskRequest) error {
@@ -344,7 +434,7 @@ func (mc *ManagerClient) CompleteSubTask(resp model.CompleteSubtaskRequest) erro
 
 	if resp.Status == "empty" {
 		log.Println("TASK is done with uuid: ", subtask.TaskUuid)
-		mc.doneTask(subtask.TaskUuid)
+		go mc.doneTask(subtask.TaskUuid)
 		return nil
 	}
 

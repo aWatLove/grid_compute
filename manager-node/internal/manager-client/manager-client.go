@@ -314,9 +314,8 @@ func (mc *ManagerClient) AlertSubtaskError(uuid string, slaveUuid string, errorS
 
 }
 
-func (mc *ManagerClient) alertTaskError(uuid string, errorStr string) { //todo отправка уведомления об ошибке мастеру и удаление задачи
+func (mc *ManagerClient) alertTaskError(uuid string, errorStr string) { // отправка уведомления об ошибке мастеру и удаление задачи
 	// найти мастера по uuid , отправить ему ошибку по ручке
-	//todo
 	_, ok := mc.taskStatus[uuid]
 	if !ok {
 		log.Printf("[DONE TASK][ERROR] task not found with uuid %s\n", uuid)

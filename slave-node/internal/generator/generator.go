@@ -176,7 +176,7 @@ func (g *Generator) SendAlert(reqBody ErrorSubtaskReq) error {
 	return nil
 }
 
-type CompleteSubtaskRequest struct { //todo в SendResult()
+type CompleteSubtaskRequest struct {
 	SlaveUUID   string          `json:"UUID"`
 	SubtaskUUID string          `json:"SubtaskUUID"`
 	Status      string          `json:"Status"`
@@ -241,7 +241,7 @@ type CompleteSubtaskRequest struct { //todo в SendResult()
 //		starlark.MakeInt(task.Start),
 //	}
 //
-//	result, err := starlark.Call(threadCompute, globalsCompute[task.Compute.FuncName], argsCompute, nil) //todo вытаскивать еще статус о подзадаче как расписал в обсидиане
+//	result, err := starlark.Call(threadCompute, globalsCompute[task.Compute.FuncName], argsCompute, nil)
 //	if err != nil {
 //		return nil, fmt.Errorf("script error while calling: %v", err)
 //	}

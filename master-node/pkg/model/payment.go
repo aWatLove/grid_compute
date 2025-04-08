@@ -6,12 +6,19 @@ type ComputeRequest struct {
 	Data json.RawMessage `json:"data"`
 }
 
-type ScriptRequest struct {
-	Script      string `json:"function"`
-	ComputeFunc string `json:"computeFunc"`
+type ScriptConfig struct {
+	Script   string `json:"Script"`   // код скрипта
+	FuncName string `json:"FuncName"` // имя функции которую нужно вызвать
 }
 
 type ComputeResponse struct {
 	Result interface{} `json:"result"`
 	Error  string      `json:"error,omitempty"`
+}
+
+type TaskConfig struct {
+	MasterUUID      string          `json:"MasterUUID"`
+	GeneratorScript ScriptConfig    `json:"GeneratorScript"`
+	ComputeScript   ScriptConfig    `json:"ComputeScript"`
+	Data            json.RawMessage `json:"Data"`
 }

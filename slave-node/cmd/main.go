@@ -29,7 +29,7 @@ func main() {
 
 	// ===== Generator =====
 	log.Println("[SERVICE] INITIALIZING GENERATOR")
-	g := generator.NewGenerator()
+	g := generator.NewGenerator(cfg)
 
 	// =====================
 

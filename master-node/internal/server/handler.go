@@ -8,7 +8,7 @@ import (
 )
 
 func (s *Server) taskDone(method string, body []byte, args *fasthttp.Args) error {
-	if method != http.MethodPost {
+	if method != http.MethodGet {
 		return errMethodNotAllowed
 	}
 
@@ -38,13 +38,17 @@ func (s *Server) subtaskDone(method string, body []byte, args *fasthttp.Args) er
 		return errMethodNotAllowed
 	}
 
-	var reqBody json.RawMessage
+	var reqBody RequestSubtaskData
 	err := json.Unmarshal(body, &reqBody)
 	if err != nil {
 		return err
 	}
 
-	s.taskCli.AddSubtask(reqBody)
+	s.taskCli.AddSubtask(reqBody.Data)
 
 	return nil
+}
+
+type RequestSubtaskData struct {
+	Data json.RawMessage `json:"Data"`
 }

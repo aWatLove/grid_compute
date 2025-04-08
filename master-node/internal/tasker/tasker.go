@@ -34,8 +34,7 @@ type TaskEngine interface {
 }
 
 type Tasker struct {
-	Script      string
-	ComputeFunc string
+	Task model.TaskConfig
 
 	chTask  chan json.RawMessage
 	chError chan error
@@ -51,10 +50,13 @@ type Tasker struct {
 	cancel context.CancelFunc
 }
 
-func NewTasker(ctx context.Context, cfg *config.Config, e TaskEngine) (*Tasker, error) {
+func NewTasker(ctx context.Context, cfg *config.Config, e TaskEngine, taskData json.RawMessage) (*Tasker, error) {
 	t := &Tasker{
-		cfg: cfg,
-		e:   e,
+		cfg:     cfg,
+		e:       e,
+		chDone:  make(chan struct{}),
+		chTask:  make(chan json.RawMessage),
+		chError: make(chan error),
 	}
 
 	ctxT, cancel := context.WithCancel(ctx)
@@ -62,19 +64,48 @@ func NewTasker(ctx context.Context, cfg *config.Config, e TaskEngine) (*Tasker, 
 	t.ctx = ctxT
 	t.cancel = cancel
 
-	f, err := os.Open(cfg.TaskScriptPath)
+	//
+	fGenerate, err := os.Open(cfg.TaskScriptGeneratePath)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	data, err := io.ReadAll(f)
+	defer fGenerate.Close()
+	dataGenerate, err := io.ReadAll(fGenerate)
 	if err != nil {
 		return nil, err
 	}
-	t.Script = string(data)
 
-	if !strings.Contains(t.Script, fmt.Sprintf("def %s(", cfg.TaskComputeFuncName)) {
+	if !strings.Contains(string(dataGenerate), fmt.Sprintf("def %s(", cfg.TaskFuncNameGenerate)) {
 		return nil, fmt.Errorf("tasker Script does not contain function")
+	}
+
+	//
+	fCompute, err := os.Open(cfg.TaskScriptComputePath)
+	if err != nil {
+		return nil, err
+	}
+	defer fCompute.Close()
+	dataCompute, err := io.ReadAll(fCompute)
+	if err != nil {
+		return nil, err
+	}
+
+	if !strings.Contains(string(dataCompute), fmt.Sprintf("def %s(", cfg.TaskFuncNameCompute)) {
+		return nil, fmt.Errorf("tasker Script does not contain function")
+	}
+	//
+
+	t.Task = model.TaskConfig{
+		MasterUUID: cfg.UUID,
+		GeneratorScript: model.ScriptConfig{
+			Script:   string(dataGenerate),
+			FuncName: cfg.TaskFuncNameGenerate,
+		},
+		ComputeScript: model.ScriptConfig{
+			Script:   string(dataCompute),
+			FuncName: cfg.TaskFuncNameCompute,
+		},
+		Data: taskData,
 	}
 
 	return t, nil
@@ -177,9 +208,8 @@ func (t *Tasker) regNode() error {
 }
 
 func (t *Tasker) sendTaskToManager() error {
-	var body []byte
 
-	payload, err := json.Marshal(body)
+	payload, err := json.Marshal(t.Task)
 
 	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("%s%s", t.cfg.ManagerURL, t.cfg.ManagerAddPath), bytes.NewReader(payload))
 	if err != nil {
@@ -207,11 +237,8 @@ func (t *Tasker) sendTaskToManager() error {
 }
 
 func (t *Tasker) closeTaskToManager() error {
-	var body []byte
 
-	payload, err := json.Marshal(body)
-
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s%s", t.cfg.ManagerURL, t.cfg.ManagerClosePath), bytes.NewReader(payload))
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s%s", t.cfg.ManagerURL, t.cfg.ManagerClosePath), nil)
 	if err != nil {
 		return err
 	}

@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"master-node/internal/config"
 	"master-node/internal/server"
 	"master-node/internal/tasker"
+	tasker_impl "master-node/internal/tasker-impl"
 	"os"
 	"os/signal"
 	"syscall"
@@ -21,9 +23,28 @@ func main() {
 	cfg := config.LoadConfig()
 	// ====================
 
+	// === tasker impl ===
+
+	taskImpl := tasker_impl.New(cfg)
+
+	// === === === === ===
+
+	matrix := map[string][][]int{
+		"matrix": {
+			{0, 1, 2, 3, 2, 1},
+			{1, 0, 3, 1, 2, 2},
+			{2, 3, 0, 2, 3, 2},
+			{3, 1, 2, 0, 2, 2},
+			{2, 2, 3, 2, 0, 2},
+			{1, 2, 3, 2, 2, 0},
+		},
+	}
+	dataTask, err := json.Marshal(matrix)
+
 	// ===== Tasker =====
 	log.Println("[SERVICE] INITIALIZING TASKER")
-	t, err := tasker.NewTasker(context.Background(), cfg, tasker.TaskEngineMock{})
+	//t, err := tasker.NewTasker(context.Background(), cfg, tasker.TaskEngineMock{})
+	t, err := tasker.NewTasker(context.Background(), cfg, taskImpl, dataTask)
 	if err != nil {
 		log.Fatal(err)
 	}

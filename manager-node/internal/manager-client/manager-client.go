@@ -103,10 +103,10 @@ type MasterNode struct {
 }
 
 type TaskConfig struct {
-	masterUUID      string
-	generatorScript model.ScriptConfig
-	computeScript   model.ScriptConfig
-	data            json.RawMessage
+	MasterUUID      string             `json:"MasterUUID"`
+	GeneratorScript model.ScriptConfig `json:"GeneratorScript"`
+	ComputeScript   model.ScriptConfig `json:"ComputeScript"`
+	Data            json.RawMessage    `json:"Data"`
 	taskName        string
 	task            Task
 }
@@ -142,6 +142,7 @@ func (mc *ManagerClient) taskWorker(ctx context.Context, uuid string) {
 						}
 						start := task.counter
 						task.counter += amount
+						mc.taskStatus[uuid] = task
 
 						delete(mc.FreeSlaves, slaveUuid)
 
@@ -166,6 +167,7 @@ func (mc *ManagerClient) taskWorker(ctx context.Context, uuid string) {
 
 func (mc *ManagerClient) sendSubTask(subtaskUuid string, taskUuid string, slave *SlaveNode, amount, start uint32) {
 	var subtask Subtask
+	mc.mu.Lock()
 	if _, ok := mc.subtasksStatus[subtaskUuid]; !ok {
 		subtask = Subtask{
 			uuid:          subtaskUuid,
@@ -182,6 +184,7 @@ func (mc *ManagerClient) sendSubTask(subtaskUuid string, taskUuid string, slave 
 		subtask.Url = slave.Url + slave.PublicPort
 		mc.subtasksStatus[subtaskUuid] = subtask
 	}
+	mc.mu.Unlock()
 
 	task := mc.taskStatus[subtask.TaskUuid]
 	mn, ok := mc.MasterNodes[task.MasterUuid]
@@ -212,7 +215,7 @@ func (mc *ManagerClient) sendSlave(reqBody model.ComputeRequest, node *SlaveNode
 		return err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://%s%s%s", node.Url, node.PublicPort, "/api/v1/addTask"), bytes.NewReader(data)) //todo checkme чекнуть как порт будет передаваться {"8080"/":8080"}
+	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://%s%s%s", node.Url, node.PublicPort, "/api/v1/addTask"), bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
@@ -240,7 +243,13 @@ func (mc *ManagerClient) sendMasterSubTask(data json.RawMessage, masterUuid stri
 		return fmt.Errorf("master node not found")
 	}
 
-	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://%s%s%s", master.Url, master.PublicPort, "/api/v1/subtask/done"), bytes.NewReader(data)) //todo checkme чекнуть как порт будет передаваться {"8080"/":8080"}
+	reqBody := struct {
+		Data json.RawMessage `json:"Data"`
+	}{data}
+
+	dataReqBody, err := json.Marshal(reqBody)
+
+	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://%s%s%s", master.Url, master.PublicPort, "/api/v1/subtask/done"), bytes.NewReader(dataReqBody)) //todo checkme чекнуть как порт будет передаваться {"8080"/":8080"}
 	if err != nil {
 		return err
 	}
@@ -327,9 +336,9 @@ func (mc *ManagerClient) alertTaskError(uuid string, errorStr string) { // от�
 	master, ok := mc.MasterNodes[uuid]
 	if !ok {
 		log.Printf("[DONE TASK][ERROR] master node not found with uuid %s\n", uuid)
+	} else {
+		master.cancelTask()
 	}
-
-	master.cancelTask()
 
 	client := http.Client{}
 
@@ -394,7 +403,7 @@ func (mc *ManagerClient) doneTask(uuid string) {
 
 	client := http.Client{}
 
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://%s%s", master.Url, "/api/v1/task/done"), nil)
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://%s%s%s", master.Url, master.PublicPort, "/api/v1/task/done"), nil)
 	if err != nil {
 		log.Println(err)
 	}
@@ -413,6 +422,17 @@ func (mc *ManagerClient) doneTask(uuid string) {
 }
 
 func (mc *ManagerClient) CompleteSubTask(resp model.CompleteSubtaskRequest) error {
+	go func() {
+		err := mc.completeSubTask(resp)
+		if err != nil {
+			log.Println("[COMPLETE_SUBTASK ERROR]:", err)
+		}
+	}()
+
+	return nil
+}
+
+func (mc *ManagerClient) completeSubTask(resp model.CompleteSubtaskRequest) error {
 	mc.mu.Lock()
 	if _, ok := mc.SlaveNodes[resp.SlaveUUID]; ok {
 		delete(mc.WorkSlaves, resp.SlaveUUID)
@@ -424,9 +444,14 @@ func (mc *ManagerClient) CompleteSubTask(resp model.CompleteSubtaskRequest) erro
 	if !ok {
 		return errors.New("subtask not found")
 	}
+	mc.mu.Lock()
 	delete(mc.subtasksStatus, resp.SubtaskUUID)
+	mc.mu.Unlock()
 
+	mc.mu.Lock()
 	task, ok := mc.taskStatus[subtask.TaskUuid]
+	mc.mu.Unlock()
+
 	if !ok {
 		return errors.New("task not found")
 	}
@@ -442,54 +467,60 @@ func (mc *ManagerClient) CompleteSubTask(resp model.CompleteSubtaskRequest) erro
 
 // subtaskWorker - воркер чекинга состояния решения подзадач у слейвов
 func (mc *ManagerClient) subtaskWorker() { // здесь пингуются сабтаски
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(30 * time.Second)
 
-	client := &http.Client{}
+	//client := &http.Client{}
 
 	for {
 		select {
 		case <-ticker.C:
+			mc.mu.Lock()
 			if len(mc.subtasksStatus) != 0 {
-				for _, subtask := range mc.subtasksStatus {
+				mc.mu.Unlock()
 
-					req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://%s%s", subtask.Url, "/api/v1/checkStatus"), nil)
-					if err != nil {
-						log.Printf("[SUBTASK_WORKER][TASK | %s][SUBTASK | %s][SLAVE | %s] error: %v\n", subtask.TaskUuid, subtask.uuid, subtask.SlaveNodeUuid, err)
-						mc.AlertSubtaskError(subtask.uuid, subtask.SlaveNodeUuid, err.Error())
-						continue
-					}
+				//for _, subtask := range mc.subtasksStatus {
+				//
+				//	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://%s%s", subtask.Url, "/api/v1/checkStatus"), nil)
+				//	if err != nil {
+				//		log.Printf("[SUBTASK_WORKER][TASK | %s][SUBTASK | %s][SLAVE | %s] error: %v\n", subtask.TaskUuid, subtask.uuid, subtask.SlaveNodeUuid, err)
+				//		mc.AlertSubtaskError(subtask.uuid, subtask.SlaveNodeUuid, err.Error())
+				//		continue
+				//	}
+				//
+				//	resp, err := client.Do(req)
+				//	if err != nil {
+				//		log.Printf("[SUBTASK_WORKER][TASK | %s][SUBTASK | %s][SLAVE | %s] error: %v\n", subtask.TaskUuid, subtask.uuid, subtask.SlaveNodeUuid, err)
+				//		mc.AlertSubtaskError(subtask.uuid, subtask.SlaveNodeUuid, err.Error())
+				//		continue
+				//	}
+				//	if resp.StatusCode/100 != 2 {
+				//		respBody, _ := io.ReadAll(resp.Body)
+				//		defer resp.Body.Close()
+				//		log.Printf("[SUBTASK_WORKER][TASK | %s][SUBTASK | %s][SLAVE | %s] error: %v\n", subtask.TaskUuid, subtask.uuid, subtask.SlaveNodeUuid, errors.New(string(respBody)))
+				//		mc.AlertSubtaskError(subtask.uuid, subtask.SlaveNodeUuid, err.Error())
+				//		continue
+				//	}
+				//
+				//	respBody, _ := io.ReadAll(resp.Body)
+				//	var status = string(respBody)
+				//
+				//	if err != nil {
+				//		log.Printf("[SUBTASK_WORKER][TASK | %s][SUBTASK | %s][SLAVE | %s] error: %v\n", subtask.TaskUuid, subtask.uuid, subtask.SlaveNodeUuid, err)
+				//		mc.AlertSubtaskError(subtask.uuid, subtask.SlaveNodeUuid, err.Error())
+				//		continue
+				//	}
+				//	if status == "error" {
+				//		log.Printf("[SUBTASK_WORKER][TASK | %s][SUBTASK | %s][SLAVE | %s] slave have 'error' status\n", subtask.TaskUuid, subtask.uuid, subtask.SlaveNodeUuid)
+				//		mc.AlertSubtaskError(subtask.uuid, subtask.SlaveNodeUuid, fmt.Sprintf("[SUBTASK_WORKER][TASK | %s][SUBTASK | %s][SLAVE | %s] slave have 'error' status", subtask.TaskUuid, subtask.uuid, subtask.SlaveNodeUuid))
+				//	} else if status != "solving" {
+				//		log.Printf("[SUBTASK_WORKER][TASK | %s][SUBTASK | %s][SLAVE | %s] slave dont have 'solving' status\n", subtask.TaskUuid, subtask.uuid, subtask.SlaveNodeUuid)
+				//		mc.AlertSubtaskError(subtask.uuid, subtask.SlaveNodeUuid, fmt.Sprintf("[SUBTASK_WORKER][TASK | %s][SUBTASK | %s][SLAVE | %s] slave dont have 'solving' status", subtask.TaskUuid, subtask.uuid, subtask.SlaveNodeUuid))
+				//	}
+				//
+				//}
 
-					resp, err := client.Do(req)
-					if err != nil {
-						log.Printf("[SUBTASK_WORKER][TASK | %s][SUBTASK | %s][SLAVE | %s] error: %v\n", subtask.TaskUuid, subtask.uuid, subtask.SlaveNodeUuid, err)
-						mc.AlertSubtaskError(subtask.uuid, subtask.SlaveNodeUuid, err.Error())
-						continue
-					}
-					if resp.StatusCode/100 != 2 {
-						respBody, _ := io.ReadAll(resp.Body)
-						defer resp.Body.Close()
-						log.Printf("[SUBTASK_WORKER][TASK | %s][SUBTASK | %s][SLAVE | %s] error: %v\n", subtask.TaskUuid, subtask.uuid, subtask.SlaveNodeUuid, errors.New(string(respBody)))
-						mc.AlertSubtaskError(subtask.uuid, subtask.SlaveNodeUuid, err.Error())
-						continue
-					}
-
-					var status string
-					err = json.NewDecoder(resp.Body).Decode(&status)
-					if err != nil {
-						log.Printf("[SUBTASK_WORKER][TASK | %s][SUBTASK | %s][SLAVE | %s] error: %v\n", subtask.TaskUuid, subtask.uuid, subtask.SlaveNodeUuid, err)
-						mc.AlertSubtaskError(subtask.uuid, subtask.SlaveNodeUuid, err.Error())
-						continue
-					}
-					if status == "error" {
-						log.Printf("[SUBTASK_WORKER][TASK | %s][SUBTASK | %s][SLAVE | %s] slave have 'error' status\n", subtask.TaskUuid, subtask.uuid, subtask.SlaveNodeUuid)
-						mc.AlertSubtaskError(subtask.uuid, subtask.SlaveNodeUuid, fmt.Sprintf("[SUBTASK_WORKER][TASK | %s][SUBTASK | %s][SLAVE | %s] slave have 'error' status", subtask.TaskUuid, subtask.uuid, subtask.SlaveNodeUuid))
-					} else if status != "solving" {
-						log.Printf("[SUBTASK_WORKER][TASK | %s][SUBTASK | %s][SLAVE | %s] slave dont have 'solving' status\n", subtask.TaskUuid, subtask.uuid, subtask.SlaveNodeUuid)
-						mc.AlertSubtaskError(subtask.uuid, subtask.SlaveNodeUuid, fmt.Sprintf("[SUBTASK_WORKER][TASK | %s][SUBTASK | %s][SLAVE | %s] slave dont have 'solving' status", subtask.TaskUuid, subtask.uuid, subtask.SlaveNodeUuid))
-					}
-
-				}
-
+			} else {
+				mc.mu.Unlock()
 			}
 
 		}
@@ -499,23 +530,27 @@ func (mc *ManagerClient) subtaskWorker() { // здесь пингуются са
 }
 
 func (mc *ManagerClient) SetTask(taskCfg TaskConfig) error {
-	if v, ok := mc.MasterNodes[taskCfg.masterUUID]; ok {
-		v.generatorScript = taskCfg.generatorScript
-		v.computeScript = taskCfg.computeScript
+	if v, ok := mc.MasterNodes[taskCfg.MasterUUID]; ok {
+		v.generatorScript = taskCfg.GeneratorScript
+		v.computeScript = taskCfg.ComputeScript
 		v.taskName = taskCfg.taskName
-		v.task = taskCfg.task
+		v.task = Task{
+			MasterUuid: taskCfg.MasterUUID,
+			Data:       taskCfg.Data,
+			counter:    0,
+		}
 		ctx, cancel := context.WithCancel(context.Background())
 		v.cancelTask = cancel
-		mc.MasterNodes[taskCfg.masterUUID] = v
-		mc.taskStatus[taskCfg.masterUUID] = Task{
-			MasterUuid: taskCfg.masterUUID,
-			Data:       taskCfg.data,
+		mc.MasterNodes[taskCfg.MasterUUID] = v
+		mc.taskStatus[taskCfg.MasterUUID] = Task{
+			MasterUuid: taskCfg.MasterUUID,
+			Data:       taskCfg.Data,
 			counter:    0,
 		}
 
-		go mc.taskWorker(ctx, taskCfg.masterUUID)
+		go mc.taskWorker(ctx, taskCfg.MasterUUID)
 	} else {
-		return fmt.Errorf("master node %s not exist", taskCfg.masterUUID)
+		return fmt.Errorf("master node %s not exist", taskCfg.MasterUUID)
 	}
 
 	return nil
@@ -555,7 +590,7 @@ func (sd *ManagerClient) checkMasterHealthWorker() {
 					res++
 				}
 			}
-			log.Printf("Services online:%d, disconnected:%d", res, ex)
+			log.Printf("[MASTERS] Services online:%d, disconnected:%d", res, ex)
 
 		}
 	}
@@ -581,7 +616,7 @@ func (sd *ManagerClient) checkSlaveHealthWorker() {
 					res++
 				}
 			}
-			log.Printf("Services online:%d, disconnected:%d", res, ex)
+			log.Printf("[SLAVES] Services online:%d, disconnected:%d", res, ex)
 
 		}
 	}

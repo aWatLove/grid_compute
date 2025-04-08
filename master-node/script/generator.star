@@ -5,69 +5,63 @@ def generate(input_data, amount, start):
     - Возвращается в стартовый город
     - Все переходы возможны (не нулевые)
     """
-    # Валидация входных данных
-    if not isinstance(input_data, dict) or "matrix" not in input_data:
+    # Валидация входных данных (Starlark-совместимая проверка типа)
+    if type(input_data) != "dict" or "matrix" not in input_data:
         return ("error", "Invalid input format")
 
     matrix = input_data["matrix"]
     num_cities = len(matrix)
 
-    if not all(len(row) == num_cities for row in matrix) or num_cities < 2:
+    # Проверка матрицы
+    matrix_check = []
+    for row in matrix:
+        matrix_check.append(len(row) == num_cities)
+
+    if not all(matrix_check) or num_cities < 2:
         return ("error", "Invalid matrix")
 
-    # Реализация permutations без itertools
+    # Реализация permutations без рекурсии (Starlark-совместимая)
     def permutations(elements):
-        if len(elements) <= 1:
-            yield elements
-        else:
-            for perm in permutations(elements[1:]):
-                for i in range(len(elements)):
-                    yield perm[:i] + elements[0:1] + perm[i:]
+        result = [[]]
+        for elem in elements:
+            new_permutations = []
+            for perm in result:
+                for i in range(len(perm) + 1):
+                    new_permutations.append(perm[:i] + [elem] + perm[i:])
+            result = new_permutations
+        return result
 
     # Фиксируем стартовый город
     start_city = 0
-    required_cities = set(range(num_cities))
 
-    # Генератор допустимых маршрутов
-    def valid_routes():
-        for perm in permutations(list(range(1, num_cities))):
-            current_city = start_city
-            route = [current_city]
-            visited = {current_city}
-            valid = True
+    # Генерация маршрутов
+    all_routes = []
+    for perm in permutations(list(range(1, num_cities))):
+        current_city = start_city
+        route = [current_city]
+        valid = True
 
-            # Проверка пути
-            for next_city in perm:
-                if matrix[current_city][next_city] == 0 or next_city in visited:
-                    valid = False
-                    break
-                route.append(next_city)
-                visited.add(next_city)
-                current_city = next_city
+        for next_city in perm:
+            if matrix[current_city][next_city] == 0:
+                valid = False
+                break
+            route.append(next_city)
+            current_city = next_city
 
-            # Проверка возврата и полного охвата
-            if valid and matrix[current_city][start_city] != 0 and len(visited) == num_cities:
-                route.append(start_city)
-                yield route
+        if valid and matrix[current_city][start_city] != 0:
+            route.append(start_city)
+            all_routes.append(route)
 
-    # Пагинация без itertools.islice
-    try:
-        gen = valid_routes()
-        selected = []
-        skipped = 0
+    # Пагинация
+    total = len(all_routes)
+    if start >= total:
+        return ("empty", None)
 
-        # Пропускаем начальные элементы
-        while skipped < start:
-            try:
-                next(gen)
-                skipped += 1
-            except StopIteration:
-                return ("empty", None)
+    end = start + amount
+    if end > total:
+        end = total
 
-        # Собираем нужное количество
-        for _ in range(amount):
-            selected.append(next(gen))
-    except StopIteration:
-        pass  # Закончились маршруты
-
-    return ("ok", {"matrix": matrix, "routes": selected}) if selected else ("empty", None)
+    return ("ok", {
+        "matrix": matrix,
+        "routes": all_routes[start:end]
+    })

@@ -32,5 +32,5 @@ func (s *Server) checkStatus(method string) ([]byte, error) {
 		return nil, errMethodNotAllowed
 	}
 
-	return json.Marshal(s.generator.CheckStatus())
+	return []byte(s.generator.CheckStatus()), nil
 }

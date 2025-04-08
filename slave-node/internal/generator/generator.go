@@ -9,7 +9,9 @@ import (
 	"log"
 	"net/http"
 	"slave-node/internal/config"
+	"slave-node/internal/utils"
 	"slave-node/pkg/model"
+	"sync"
 )
 
 //type ScriptConfig struct {
@@ -34,18 +36,25 @@ type Generator struct {
 	cfg    *config.Config
 
 	taskCh chan model.ComputeRequest
+	mu     sync.Mutex
 }
 
 func NewGenerator(cfg *config.Config) *Generator {
-	return &Generator{
+
+	g := &Generator{
 		status: 0,
 		cfg:    cfg,
 		taskCh: make(chan model.ComputeRequest),
+		mu:     sync.Mutex{},
 	}
+	go g.taskWorker()
+	return g
 }
 
 func (g *Generator) AddTask(task model.ComputeRequest) error {
 	if g.status != STATUS_WAIT_TASK {
+		g.mu.Lock()
+		defer g.mu.Unlock()
 		return fmt.Errorf("NODE has status: %s", statusStr[g.status])
 	}
 
@@ -60,26 +69,40 @@ func (g *Generator) CheckStatus() string {
 // Обновленный обработчик задач
 func (g *Generator) taskWorker() {
 	for task := range g.taskCh {
+		log.Println("REQUEST TASK:", task.Start, task.Amount, task.UuidSubtask)
+		g.mu.Lock()
 		g.status = STATUS_SOLVING
+		g.mu.Unlock()
 		data, status, err := g.ComputeTask(task)
 		if err != nil {
 			status = "error"
+			log.Println("ERROR TASK:", data, status, err)
 			err = g.SendAlert(ErrorSubtaskReq{
 				SlaveUUID:   g.cfg.UUID,
 				SubtaskUUID: task.UuidSubtask,
 				Error:       err.Error(),
 			})
+			g.mu.Lock()
 			g.status = STATUS_ERROR
+			g.mu.Unlock()
 
 		} else {
+			log.Println("SEND RESULT TASK:", data, status)
 			err = g.SendResult(task, data, status)
+			g.mu.Lock()
+			g.status = STATUS_WAIT_TASK
+			g.mu.Unlock()
 			if err != nil {
 				g.status = STATUS_ERROR
 			} else {
+				g.mu.Lock()
 				g.status = STATUS_WAIT_TASK
+				g.mu.Unlock()
 			}
 
 		}
+
+		g.status = STATUS_WAIT_TASK
 
 	}
 }
@@ -107,7 +130,7 @@ func (g *Generator) SendResult(task model.ComputeRequest, data interface{}, stat
 		return fmt.Errorf("Failed to marshal data: %v", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://%s%s", g.cfg.ManagerURL, "/api/v1/subtask/complete"), bytes.NewReader(dataRes))
+	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("%s%s", g.cfg.ManagerURL, "/api/v1/subtask/complete"), bytes.NewReader(dataRes))
 	if err != nil {
 		log.Printf("Failed to create request: %v", err)
 		return fmt.Errorf("Failed to create request: %v", err)
@@ -251,6 +274,8 @@ type CompleteSubtaskRequest struct {
 
 // ComputeTask возвращает данные, статус и ошибку
 func (g *Generator) ComputeTask(task model.ComputeRequest) (interface{}, string, error) {
+	defer utils.Recovery("COMPUTE TASK")
+
 	// ... [парсинг входных данных] ...
 	// Конвертируем входные данные в Starlark значение
 	data, err := parseInputData(task.Data)
@@ -272,7 +297,7 @@ func (g *Generator) ComputeTask(task model.ComputeRequest) (interface{}, string,
 		Print: func(_ *starlark.Thread, msg string) { log.Println("[SCRIPT][GENERATE]", msg) },
 	}
 
-	globalsGenerate, err := starlark.ExecFile(threadGenerate, "compute.star", task.Generate.Script, builtinsGenerate)
+	globalsGenerate, err := starlark.ExecFile(threadGenerate, "generator.star", task.Generate.Script, builtinsGenerate)
 	if err != nil {
 		return nil, "error", fmt.Errorf("script error: %v", err)
 	}
@@ -346,6 +371,7 @@ func (g *Generator) ComputeTask(task model.ComputeRequest) (interface{}, string,
 	if err != nil {
 		return nil, "error", err
 	}
+	log.Println(goData)
 
 	return goData, statusCompute, nil
 }

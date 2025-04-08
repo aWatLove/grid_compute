@@ -1,10 +1,10 @@
 package config
 
 import (
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	"github.com/kelseyhightower/envconfig"
 	"log"
-	"strings"
 	"time"
 )
 
@@ -19,10 +19,10 @@ type Config struct {
 	ManagerClosePath  string `envconfig:"MANAGER_TASK_CLOSE" required:"true"`
 	ManagerStatusPath string `envconfig:"MANAGER_TASK_STATUS" required:"true"`
 
-	TaskScriptPath      string `envconfig:"TASK_SCRIPT_PATH" required:"true"`
-	TaskComputeFuncName string `envconfig:"TASK_COMPUTE_FUNC_NAME" required:"true"`
-	TaskFuncArgs        string `envconfig:"TASK_FUNC_ARGS" required:"true"`
-	TaskArgs            []string
+	TaskScriptComputePath  string `envconfig:"TASK_SCRIPT_COMPUTE_PATH" required:"true"`
+	TaskFuncNameCompute    string `envconfig:"TASK_COMPUTE_FUNC_NAME_COMPUTE" required:"true"`
+	TaskScriptGeneratePath string `envconfig:"TASK_SCRIPT_GENERATE_PATH" required:"true"`
+	TaskFuncNameGenerate   string `envconfig:"TASK_COMPUTE_FUNC_NAME_GENERATE" required:"true"`
 
 	CheckHealthInterval time.Duration `envconfig:"HEALTH_CHECK_INTERVAL" required:"true"`
 }
@@ -43,7 +43,7 @@ func LoadConfig() *Config {
 		log.Fatalln("[CONFIG][ERROR]:", err)
 	}
 
-	cfg.TaskArgs = strings.Split(cfg.TaskFuncArgs, ",")
+	cfg.UUID = uuid.NewString()
 
 	cfg.PrintConfig()
 
@@ -53,12 +53,14 @@ func LoadConfig() *Config {
 func (c *Config) PrintConfig() {
 	log.Println("===================== CONFIG =====================")
 	log.Println("_____________SERVER____________ ")
-	log.Println("PUBLIC_PORT.................... ", c.PublicPort)
-	log.Println("PRIVATE_PORT................... ", c.PrivatePort)
+	log.Println("UUID................................. ", c.UUID)
+	log.Println("PUBLIC_PORT.......................... ", c.PublicPort)
+	log.Println("PRIVATE_PORT......................... ", c.PrivatePort)
 	log.Println("_____________TASK____________ ")
-	log.Println("SCRIPT_PATH................... ", c.TaskScriptPath)
-	log.Println("COMPUTE_FUNC_NAME............. ", c.TaskComputeFuncName)
-	log.Println("INPUT_ARGS.................... ", c.TaskFuncArgs)
+	log.Println("TASK_SCRIPT_COMPUTE_PATH............. ", c.TaskScriptComputePath)
+	log.Println("TASK_COMPUTE_FUNC_NAME_COMPUTE....... ", c.TaskFuncNameCompute)
+	log.Println("TASK_SCRIPT_GENERATE_PATH............ ", c.TaskScriptGeneratePath)
+	log.Println("TASK_COMPUTE_FUNC_NAME_GENERATE...... ", c.TaskFuncNameGenerate)
 
 	log.Println("==================================================")
 }
